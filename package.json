@@ -1,0 +1,9 @@
+{
+  "name": "globed-relay",
+  "version": "1.0.0",
+  "description": "Tiny WebSocket room server for the Geometry Dash web Globed mod",
+  "main": "globed-relay.js",
+  "scripts": { "start": "node globed-relay.js" },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
