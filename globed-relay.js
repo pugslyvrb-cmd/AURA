@@ -190,7 +190,36 @@ function handle(c, m) {
 }
 
 /* ---------- http + upgrade ---------- */
+/* ---------- GD proxy: forwards the game's online-level/account requests to Geometry Dash's servers ---------- */
+const GD_HOSTS = (process.env.GD_HOSTS || 'www.boomlings.com,boomlings.com,geometrydashfiles.b-cdn.net').split(',').map(x => x.trim().toLowerCase());
+const GD_INSECURE = !!process.env.GD_INSECURE;           // tests only: allow http and ports
+const gdHits = new Map();
+const clientIp = req => { const x = String(req.headers['x-forwarded-for'] || '').split(','); return (TRUST_PROXY ? x[x.length - 1].trim() : '') || req.socket.remoteAddress || '?'; };
+function gdProxy(req, res) {
+  const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,HEAD,OPTIONS', 'access-control-expose-headers': '*' };
+  const fail = (code, msg) => { res.writeHead(code, Object.assign({ 'content-type': 'text/plain' }, cors)); res.end(msg); };
+  if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+  if (ORIGINS.length && !ORIGINS.includes(req.headers.origin)) return fail(403, 'origin not allowed');
+  const ip = clientIp(req), now = Date.now(), h = (gdHits.get(ip) || []).filter(t => now - t < 60000);
+  if (h.length >= 240) return fail(429, 'slow down'); h.push(now); gdHits.set(ip, h);
+  let target; try { target = new URL(new URL(req.url, 'http://x').searchParams.get('url')); } catch (e) { return fail(400, 'bad url'); }
+  const okProto = target.protocol === 'https:' || (GD_INSECURE && target.protocol === 'http:');
+  if (!okProto || target.username || target.password || (!GD_INSECURE && target.port) || !GD_HOSTS.includes(target.hostname.toLowerCase())) return fail(403, 'host not allowed');
+  if (!['GET', 'POST', 'HEAD'].includes(req.method)) return fail(405, 'method not allowed');
+  const hdr = {}; ['content-type', 'content-length', 'range'].forEach(k => { if (req.headers[k]) hdr[k] = req.headers[k]; });
+  const up = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers: hdr, timeout: 20000 }, r => {
+    const out = Object.assign({}, cors, { 'x-gd-proxy': '1' });
+    ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(k => { if (r.headers[k]) out[k] = r.headers[k]; });
+    res.writeHead(r.statusCode || 502, out); r.pipe(res);
+  });
+  up.on('timeout', () => up.destroy()); up.on('error', () => { if (!res.headersSent) fail(502, 'upstream error'); else res.destroy(); });
+  let n = 0; req.on('data', d => { if ((n += d.length) > 2097152) { up.destroy(); req.destroy(); } });
+  req.pipe(up);
+}
+setInterval(() => { const t = Date.now(); for (const [k, v] of gdHits) if (!v.some(x => t - x < 60000)) gdHits.delete(k); }, 60000).unref();
+
 const handler = (req, res) => {
+  if (req.url.startsWith('/gd?') || req.url.startsWith('/gd/?')) return gdProxy(req, res);
   if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, rooms: rooms.size })); }
   res.writeHead(426, { 'content-type': 'text/plain' }); res.end('Globed Web relay. Connect with a WebSocket.\n');
 };
